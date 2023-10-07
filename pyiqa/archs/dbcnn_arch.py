@@ -179,3 +179,76 @@ class DBCNN(nn.Module):
         X = self.fc(X)
 
         return X
+
+
+@ARCH_REGISTRY.register()
+class DBCNNSal(DBCNN):
+    """Full DBCNN network.
+    Args:
+        fc (Boolean): Whether initialize the fc layers.
+        use_bn (Boolean): Whether use batch normalization.
+        pretrained_scnn_path (String): Pretrained scnn path.
+        default_mean (list): Default mean value.
+        default_std (list): Default std value.
+
+    Reference:
+        Zhang, Weixia, et al. "Blind image quality assessment using
+        a deep bilinear convolutional neural network." IEEE Transactions
+        on Circuits and Systems for Video Technology 30.1 (2018): 36-47.
+
+        """
+
+    def __init__(
+            self, 
+            fc=True, 
+            use_bn=True, 
+            pretrained_scnn_path=None, 
+            pretrained=True, 
+            pretrained_model_path=None, 
+            default_mean=[0.485, 0.456, 0.406], 
+            default_std=[0.229, 0.224, 0.225],
+            sal_mode=None
+        ):
+        super().__init__(fc, use_bn, pretrained_scnn_path, pretrained, pretrained_model_path, default_mean, default_std)
+        self.sal_mode = sal_mode
+        self.sal_conv = nn.Conv2d(640, 1, 1, bias=False)
+
+    def forward(self, X, sal=None):
+        print(f"{X[0, 0, :3, :3]=}")
+        print(f"{self.sal_conv.weight.data[:3, :3, 0, 0]=}")
+        r"""Compute IQA using DBCNN model.
+
+        Args:
+            X: An input tensor with (N, C, H, W) shape. RGB channel order for colour images.
+
+        Returns:
+            Value of DBCNN model.
+
+        """
+        # print('saliency:', sal)
+
+        X = self.preprocess(X)
+
+        X1 = self.features1(X)
+        X2 = self.features2(X)
+
+        N, _, H, W = X1.shape
+        N, _, H2, W2 = X2.shape
+
+        if (H != H2) or (W != W2):
+            X2 = F.interpolate(X2, (H, W), mode='bilinear', align_corners=True)
+
+        sal_pred = self.sal_conv(torch.concat([X1, X2], axis=1))
+
+        X1 = X1.view(N, 512, H * W)
+        X2 = X2.view(N, 128, H * W)
+        X = torch.bmm(X1, torch.transpose(X2, 1, 2)) / (H * W)  # Bilinear
+        X = X.view(N, 512 * 128)
+        X = torch.sqrt(X + 1e-8)
+        X = torch.nn.functional.normalize(X)
+        X = self.fc(X)
+
+        if self.sal_mode == 'input':
+            return X
+        else:
+            return X, sal_pred

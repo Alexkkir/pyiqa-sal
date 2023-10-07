@@ -14,7 +14,7 @@ def test_pipeline(root_path):
 
     torch.backends.cudnn.benchmark = True
     # torch.backends.cudnn.deterministic = True
-
+    
     # mkdir and initialize loggers
     make_exp_dirs(opt)
     log_file = osp.join(opt['path']['log'], f"test_{opt['name']}_{get_time_str()}.log")

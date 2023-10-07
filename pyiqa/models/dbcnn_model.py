@@ -9,11 +9,11 @@ from pyiqa.metrics import calculate_metric
 from pyiqa.utils import get_root_logger, imwrite, logger, tensor2img
 from pyiqa.utils.registry import MODEL_REGISTRY
 from pyiqa.models import lr_scheduler as lr_scheduler
-from .general_iqa_model import GeneralIQAModel
+from .general_iqa_model import GeneralIQAModel, GeneralIQASalModel
 
 
 @MODEL_REGISTRY.register()
-class DBCNNModel(GeneralIQAModel):
+class DBCNNModel(GeneralIQASalModel):
     """General module to train an IQA network."""
 
     def __init__(self, opt):

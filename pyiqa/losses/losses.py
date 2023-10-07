@@ -3,6 +3,7 @@ import torch
 from torch import autograd as autograd
 from torch import nn as nn
 from torch.nn import functional as F
+from torchvision.transforms import functional as TF
 
 from pyiqa.utils.registry import LOSS_REGISTRY
 from .loss_util import weighted_loss
@@ -21,6 +22,16 @@ def mse_loss(pred, target):
 
 
 @weighted_loss
+def normalized_mse_loss(pred, target):
+    eps = 1e-8
+    target = TF.resize(target, pred.shape[-2:])
+    pred = pred / (eps + pred.sum(axis=(1, 2, 3), keepdim=True))
+    target = target / (eps + target.sum(axis=(1, 2, 3), keepdim=True))
+    loss = (pred - target).abs().sum() / 2
+    return loss
+
+
+@weighted_loss
 def cross_entropy(pred, target):
     return F.cross_entropy(pred, target, reduction='none')
 
@@ -33,6 +44,40 @@ def nll_loss(pred, target):
 @weighted_loss
 def charbonnier_loss(pred, target, eps=1e-12):
     return torch.sqrt((pred - target)**2 + eps)
+
+@LOSS_REGISTRY.register()
+class MultiTaskLoss(nn.Module):
+    """
+        Based on https://github.com/IrvingZJU/Multi-task-learning-Using-Uncertainty/blob/main/MTL_Uncertainty.py
+    """
+    def __init__(self, n_tasks: int):
+        super().__init__()
+        self.n_tasks = n_tasks
+        self.log_square_vars = nn.Parameter(torch.zeros(n_tasks))
+
+    def forward(self, losses):
+        out = 0
+        for i, loss in enumerate(losses):
+            s = self.log_square_vars[i]
+            out += 1 / (2 * torch.exp(s)) * loss + s / 2
+        return out
+    
+@LOSS_REGISTRY.register()
+class MultiTaskLossSimple(nn.Module):
+    """
+        Based on https://github.com/IrvingZJU/Multi-task-learning-Using-Uncertainty/blob/main/MTL_Uncertainty.py
+    """
+    def __init__(self, n_tasks: int):
+        super().__init__()
+        self.n_tasks = n_tasks
+        self.log_vars = nn.Parameter(torch.zeros(n_tasks))
+
+    def forward(self, losses):
+        out = 0
+        for i, loss in enumerate(losses):
+            s = self.log_vars[i]
+            out += 1 / (2 * torch.exp(2 * s)) * loss + s
+        return out
 
 
 @LOSS_REGISTRY.register()
@@ -89,6 +134,61 @@ class MSELoss(nn.Module):
             weight (Tensor, optional): of shape (N, C, H, W). Element-wise weights. Default: None.
         """
         return self.loss_weight * mse_loss(pred, target, weight, reduction=self.reduction)
+
+@LOSS_REGISTRY.register()
+class MSESalLoss(nn.Module):
+    """MSE (L2) loss.
+
+    Args:
+        loss_weight (float): Loss weight for MSE loss. Default: 1.0.
+        reduction (str): Specifies the reduction to apply to the output.
+            Supported choices are 'none' | 'mean' | 'sum'. Default: 'mean'.
+    """
+
+    def __init__(self, loss_weight=1.0, reduction='mean'):
+        super(MSESalLoss, self).__init__()
+        if reduction not in ['none', 'mean', 'sum']:
+            raise ValueError(f'Unsupported reduction mode: {reduction}. Supported ones are: {_reduction_modes}')
+
+        self.loss_weight = loss_weight
+        self.reduction = reduction
+
+    def forward(self, pred, target, weight=None, **kwargs):
+        """
+        Args:
+            pred (Tensor): of shape (N, C, H, W). Predicted tensor.
+            target (Tensor): of shape (N, C, H, W). Ground truth tensor.
+            weight (Tensor, optional): of shape (N, C, H, W). Element-wise weights. Default: None.
+        """
+        target = TF.resize(target, pred.shape[-2:])
+        return self.loss_weight * mse_loss(pred, target, weight, reduction=self.reduction)
+    
+@LOSS_REGISTRY.register()
+class NormalizedMSELoss(nn.Module):
+    """Normalized MSE (L2) loss.
+
+    Args:
+        loss_weight (float): Loss weight for normalized MSE loss. Default: 1.0.
+        reduction (str): Specifies the reduction to apply to the output.
+            Supported choices are 'none' | 'mean' | 'sum'. Default: 'mean'.
+    """
+
+    def __init__(self, loss_weight=1.0, reduction='mean'):
+        super(NormalizedMSELoss, self).__init__()
+        if reduction not in ['none', 'mean', 'sum']:
+            raise ValueError(f'Unsupported reduction mode: {reduction}. Supported ones are: {_reduction_modes}')
+
+        self.loss_weight = loss_weight
+        self.reduction = reduction
+
+    def forward(self, pred, target, weight=None, **kwargs):
+        """
+        Args:
+            pred (Tensor): of shape (N, C, H, W). Predicted tensor.
+            target (Tensor): of shape (N, C, H, W). Ground truth tensor.
+            weight (Tensor, optional): of shape (N, C, H, W). Element-wise weights. Default: None.
+        """
+        return self.loss_weight * normalized_mse_loss(pred, target, weight, reduction=self.reduction)
 
 
 @LOSS_REGISTRY.register()

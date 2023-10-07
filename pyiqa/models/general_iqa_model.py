@@ -132,12 +132,12 @@ class GeneralIQAModel(BaseModel):
         if self.cri_mos:
             l_mos = self.cri_mos(self.output_score, self.gt_mos)
             l_total += l_mos
-            loss_dict['l_mos'] = l_mos
+            loss_dict['l_mos'] = l_mos / self.cri_mos.weight
 
         if self.cri_metric:
             l_metric = self.cri_metric(self.output_score, self.gt_mos)
             l_total += l_metric
-            loss_dict['l_metric'] = l_metric
+            loss_dict['l_metric'] = l_metric / self.cri_mos.weight
 
         l_total.backward()
         self.optimizer.step()
@@ -241,3 +241,104 @@ class GeneralIQAModel(BaseModel):
     def save(self, epoch, current_iter, save_net_label='net'):
         self.save_network(self.net, save_net_label, current_iter)
         self.save_training_state(epoch, current_iter)
+
+
+@MODEL_REGISTRY.register()
+class GeneralIQASalModel(GeneralIQAModel):
+    """General module to train an IQA network."""
+
+    def __init__(self, opt):
+        super(GeneralIQASalModel, self).__init__(opt)
+        self.train_stage = 'train'
+        assert self.opt['network']['sal_mode'] in ['input', 'output']
+        self.sal_mode = self.opt['network']['sal_mode']
+
+    def feed_data(self, data):
+        self.img_input = data['img'].to(self.device)
+        self.gt_mos = data['mos_label'].to(self.device)
+        self.sal_input = data['sal_img'].to(self.device)
+        
+    def net_forward(self, net):
+        if self.sal_mode == 'input':
+            return net(self.img_input, self.sal_input)
+        else:
+            return net(self.img_input)
+        
+    def test(self):
+        self.net.eval()
+        with torch.no_grad():
+            if self.sal_mode == 'input':
+                self.output_score = self.net_forward(self.net)
+            else:
+                self.output_score, self.pred_sal = self.net_forward(self.net)
+        self.net.train()
+        
+    def init_training_settings(self):
+        self.net.train()
+        train_opt = self.opt['train']
+
+        self.net_best = build_network(self.opt['network']).to(self.device)
+
+        # define losses
+        if train_opt.get('mos_loss_opt'):
+            self.cri_mos = build_loss(train_opt['mos_loss_opt']).to(self.device)
+        else:
+            self.cri_mos = None
+
+        # define metric related loss, such as plcc loss
+        if train_opt.get('metric_loss_opt'):
+            self.cri_metric = build_loss(train_opt['metric_loss_opt']).to(self.device)
+        else:
+            self.cri_metric = None
+
+         # define losses
+        if train_opt.get('sal_loss_opt'):
+            self.cri_sal = build_loss(train_opt['sal_loss_opt']).to(self.device)
+        else:
+            self.cri_sal = None
+
+        if train_opt.get('multiask_loss_opt'):
+            self.multitask_loss = build_loss(train_opt['multiask_loss_opt']).to(self.device)
+        else:
+            self.multitask_loss = None
+        # set up optimizers and schedulers
+        self.setup_optimizers()
+        self.setup_schedulers()
+        
+    def optimize_parameters(self, current_iter):
+        self.optimizer.zero_grad()
+        if self.sal_mode == 'input':
+            self.output_score = self.net_forward(self.net)
+        else:
+            self.output_score, self.pred_sal = self.net_forward(self.net)
+
+        l_total = 0
+        loss_dict = OrderedDict()
+        # pixel loss
+        if self.cri_mos:
+            l_mos = self.cri_mos(self.output_score, self.gt_mos)
+            loss_dict['l_mos'] = l_mos / self.cri_mos.loss_weight
+
+        if self.cri_metric:
+            l_metric = self.cri_metric(self.output_score, self.gt_mos)
+            loss_dict['l_metric'] = l_metric / self.cri_metric.loss_weight
+
+        if self.cri_sal:
+            l_sal = self.cri_sal(self.pred_sal, self.sal_input)
+            loss_dict['l_sal'] = l_sal / self.cri_sal.loss_weight
+
+        if not self.multitask_loss:
+            l_total = sum(loss_dict.values())
+        else:
+            l_total = self.multitask_loss(loss_dict.values())
+
+        l_total.backward()
+        self.optimizer.step()
+
+        self.log_dict = self.reduce_loss_dict(loss_dict)
+
+        # log metrics in training batch
+        pred_score = self.output_score.squeeze(1).cpu().detach().numpy()
+        gt_mos = self.gt_mos.squeeze(1).cpu().detach().numpy()
+        for name, opt_ in self.opt['val']['metrics'].items():
+            self.log_dict[f'train_metrics/{name}'] = calculate_metric([pred_score, gt_mos], opt_)

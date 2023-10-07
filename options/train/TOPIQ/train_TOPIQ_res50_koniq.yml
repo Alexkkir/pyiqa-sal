@@ -1,4 +1,4 @@
-name: 001_CFANet_Res50_koniq
+name: 002_CFANet_Res50_koniq_debug_loggers
 # name: debug_model
 model_type: GeneralIQAModel 
 num_gpu: 1  # set num_gpu: 0 for cpu mode
@@ -104,7 +104,7 @@ logger:
   log_imgs_freq: 1000
   use_tb_logger: true
   wandb:
-    project: ~
+    project: IQA-7 pyiqa
     resume_id: ~
 
 # dist training settings
